@@ -145,65 +145,85 @@ The codebase lives in two repos:
 
 ## 6. What Still Needs to Be Done
 
-### This Week (Mar 17-19) — Launch Critical
+### This Week — Launch Critical (Updated Mar 18)
 
-**SPO-79 — Session replay + shareable score card** *(Due Mar 18, Urgent)*
-The web dashboard at `/session/<uuid>` shows the static end state. This animates it into a replay — scrub backward and forward through the session, watch the convergence curve sync to the file heatmap in real time. Adds a shareable Wordle-style score card. Virality mechanic. No Salaxia dependency — pure replay of recorded session data.
+**The core product loop is: detect bug signal → highlight location → surface intervention prompt.**
+Everything below is ordered to build that loop end-to-end before anything else.
 
-**SAL-36 — Deploy Salaxia to production** *(Overdue, was due Mar 16)*
-Salaxia runs locally but isn't hosted anywhere publicly accessible. The CLI calls Salaxia over the internet — it needs a production URL. Without this, the scoring loop doesn't close. Needs to be on a VPS with the FastAPI server running and a stable endpoint.
+**SAL-36 — Deploy Salaxia to production** *(Overdue — do first)*
+Salaxia runs locally but isn't hosted anywhere publicly accessible. The CLI calls Salaxia over the internet — it needs a production URL. Without this, nothing scores. Needs to be on a VPS with the FastAPI server running and a stable endpoint.
 
 **SAL-17 — End-to-end integration test**
 Full smoke test: user runs `sploink run`, events emit, Salaxia receives, scores compute, dashboard reflects. Nothing currently validates the full loop works as one system.
 
 ---
 
-### Scoring Lane — Currently Unowned (High Priority)
+### The Core Product Loop — Ved's Priority Order
 
-This is the intelligence layer of Salaxia. It was originally Divit's lane. It's now open and needs an owner. These four issues compose into the full behavioral scoring system:
+These five issues compose the next-generation debugger: bugs detected before they're visible, highlighted in the IDE, with a targeted intervention prompt surfaced inline.
 
-**SAL-31 — Drift from error signal**
-Weighted scorer. Takes the raw event stream and computes:
-- Error rate trajectory (0.35 weight) — are errors increasing or decreasing?
+**SAL-31 — Drift from error signal** *(blocks everything below)*
+The pre-visibility bug detector. Takes the raw event stream and computes a `drift_score` plus exact timestamps for every threshold crossing. This is the signal that powers the IDE highlighting and the intervention prompt. Without it, everything downstream has nothing to work with.
+
+Four sub-signals:
+- Error rate trajectory (0.35 weight) — are errors increasing?
 - Test regression depth (0.35 weight) — did passing tests start failing?
 - Novel error rate (0.20 weight) — new error types appearing = expanding failure surface
 - Retry escalation (0.10 weight) — same failing command retried without modification
 
-Output: `drift_score` between 0 and 1.
+Output: `drift_score` between 0 and 1 + `threshold_crossings` array with timestamps, signal type, and plain English label per crossing.
+
+**SPO-85 — Live file highlighting in IDE extension** *(depends on SAL-31)*
+While a session is running, highlight files in the IDE that behavioral signals indicate are at risk — before a bug is visible in output. Colored gutter indicators per signal type (red = novel error, orange = test regression, yellow = retry escalation). Hovering a highlighted file shows the signal label AND the intervention prompt from SAL-26 inline — one click to copy and paste into the agent. This is the complete three-second loop: see it, understand it, fix it.
+
+Blocked by: SAL-31 (drift timestamps), SAL-26 (intervention prompt to surface inline).
+
+**SAL-29 — Behavioral signal → skill matcher** *(depends on SAL-31)*
+Maps observed behavioral signals to the right intervention prompt from the skills registry. High drift + test regression → "Run diagnostics before continuing." Retry escalation → "Break the loop — reframe the approach." Novel error → "New error type detected — investigate before proceeding." This is the brain behind the intervention.
+
+**SAL-26 — `POST /intervention` endpoint** *(depends on SAL-29)*
+Receives a behavioral signal (drift score, thrash flag, stall detected), consults SAL-29 (skill matcher), returns a targeted intervention prompt string. This prompt is what gets surfaced inline in SPO-85 when a developer hovers a highlighted file.
+
+**SPO-84 — Pre-visibility bug detection markers on replay** *(depends on SAL-31 + SPO-79)*
+Places colored markers on the session replay timeline at the exact timestamps where each behavioral signal crossed a detection threshold. Hovering a marker shows signal type, timestamp, and plain English label. Makes "this is where the bug became inevitable" visible.
+
+---
+
+### Scoring Lane — Unowned (Needs a Second Engineer)
 
 **SAL-28 — Environment quality scorer**
-Separates environment failure from agent failure. A good agent in a broken environment looks like a bad agent. This scorer evaluates the scaffolding: how specific was the task framing, how saturated is the context window, what's the tool configuration quality.
-
-**SAL-29 — Behavioral signal → skill matcher**
-Maps the observed behavioral signals (high drift, high thrash, stall detected) to the right intervention skill from the skills registry. If the agent is retrying the same failing command, the right skill is "break the loop with a reframe." If tests are regressing, the right skill is "run diagnostic before continuing."
-
-**SAL-26 — `POST /intervention` endpoint**
-Receives a behavioral signal from Sploink (drift score, thrash flag, stall detected), consults SAL-29 (skill matcher) and SAL-27 (skills registry), returns an intervention prompt string to surface in the dashboard. This is the human-in-the-loop layer.
+Separates environment failure from agent failure. Scores scaffolding quality independently — task framing specificity, context window saturation, tool configuration.
 
 **SAL-32 — Unified session score**
-Combines the three signal streams into one composite session score: system behavior (convergence/thrash/momentum) + drift from error (SAL-31) + environment quality (SAL-28). This is the final number that feeds agent ranking.
+Composites system behavior (convergence/thrash/momentum) + drift from error (SAL-31) + environment quality (SAL-28) into one number that feeds agent ranking.
 
 ---
 
 ### Near-Term (Phase 2)
 
-**SPO-45 — Data fusion layer**
-CLI telemetry and IDE telemetry are complementary. CLI sees what the agent *does* (shell commands, git state, file edits). IDE sees what the code *is* (live error count, diagnostic signatures, incremental diff growth). Neither source alone is sufficient. This merges both streams into a unified session timeline.
+**SPO-79 — Session replay** *(audit trail, not the product)*
+Animates the session timeline — scrub backward and forward through the session, watch convergence curve sync to file heatmap in real time. With SAL-31 markers, the replay tells a story: "this is when the bug became inevitable." Without them it's just animation. Build after the core loop is live.
+
+**SPO-80 — Shareable session card URL**
+Minimal shareable page at `/session/<uuid>/card` — drift score, convergence sparkline, top files, session duration. OG tags for Twitter sharing. Build after SPO-79.
+
+**SPO-45 — Data fusion layer** *(needed when multi-layer scoring is live)*
+Merges CLI telemetry and IDE telemetry into a unified session timeline. Required when SAL-32 composites all four graph layers — each layer produces signals on a different clock. Defer until SAL-32 is live.
 
 **SAL-25 — Sub-goal context in Salaxia ingestion**
-With goal attribution live (SPO-29 done), Salaxia needs to process `goal_context` fields from incoming events and index them. Enables scoring at the sub-goal level, not just session level.
+Process `goal_context` fields from incoming events. Enables scoring at sub-goal level, not just session level.
 
 **SAL-24 — Skills scoring**
-With sub-goal attribution, we can score individual skills (specific prompts, tool chains, reasoning patterns) not just whole agents. This is the foundation for the skills marketplace — you don't need complete agents to bootstrap it, just skills.
+Score individual skills (prompts, tool chains, reasoning patterns) not just whole agents. Foundation for the skills marketplace.
 
-**SPO-77 — Human-in-the-loop intervention UI** *(Due Mar 18, Backlog)*
-When Salaxia fires an intervention, the developer needs to see it in the HUD and decide whether to act. This renders the intervention prompt in the dashboard with Accept/Dismiss. The human pulls the trigger — Salaxia suggests, the developer decides.
+**SPO-77 — Human-in-the-loop intervention UI**
+Renders the intervention prompt in the dashboard with Accept/Dismiss. The human pulls the trigger — Salaxia suggests, the developer decides.
 
-**SPO-49 — Desktop HUD** *(Due Mar 18, Backlog)*
-Always-on-top floating window that shows session state regardless of what application you're in. Developers run agents and then switch to a browser, a call, Notion. The HUD stays visible. When thrash spikes, it demands attention.
+**SPO-49 — Desktop HUD**
+Always-on-top floating window showing session state regardless of what app you're in. When thrash spikes, it demands attention.
 
 **SPO-83 — Lightweight prompt suggestions**
-When a threshold is crossed (drift > 0.7, thrash sustained > 5 minutes), generate a targeted LLM-generated recovery prompt and surface it to the developer. Simpler than the full intervention stack — fires automatically without needing the full SAL-29 routing.
+When drift > 0.7 or thrash sustained > 5 minutes, auto-generate a recovery prompt and surface it. Simpler than the full SAL-29 routing — fires automatically.
 
 ---
 
